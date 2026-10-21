@@ -48,15 +48,10 @@ object DatabaseSeeder {
         dao.setSetting(AppSettingEntity("show_phonetics", "true"))
         dao.setSetting(AppSettingEntity("exam_date", "November 14, 2026"))
         dao.setSetting(AppSettingEntity("exam_chapters", "ch1,ch2,ch3,ch4,ch5"))
-        dao.setSetting(AppSettingEntity("custom_gemini_api_key", "AQ.Ab8RN6IkuYeoFhiXRXC1OaXDOx2JEwDl3R4urPRlNinbK7zlHQ"))
     }
 
     suspend fun ensureAllCourseMaterialsPresent(dao: AppDao) {
         val existingDocs = dao.getAllDocumentsList()
-        val currentKey = dao.getSetting("custom_gemini_api_key")
-        if (currentKey.isNullOrBlank()) {
-            dao.setSetting(AppSettingEntity("custom_gemini_api_key", "AQ.Ab8RN6IkuYeoFhiXRXC1OaXDOx2JEwDl3R4urPRlNinbK7zlHQ"))
-        }
         
         // Chapter 1 check
         val ch1Docs = existingDocs.filter { it.chapterId == "ch1" }

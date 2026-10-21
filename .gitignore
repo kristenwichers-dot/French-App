@@ -1,2 +1,29 @@
+# Environment & Secrets (NEVER push to git or GitHub)
 .env
+.env.*
+.env.local
+!.env.example
+
+# Gradle
 .gradle/
+build/
+app/build/
+*/build/
+
+# Signing & Keystores
+*.keystore
+*.jks
+debug.keystore
+debug.keystore.base64
+
+# Build outputs
+.build-outputs/
+*.apk
+*.aab
+
+# IDE & OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+local.properties

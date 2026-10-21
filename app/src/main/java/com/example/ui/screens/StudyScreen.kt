@@ -428,6 +428,16 @@ fun PronunciationCoachTabContent(viewModel: FrenchCompanionViewModel) {
 fun ExamPrepTabContent(viewModel: FrenchCompanionViewModel) {
     val weakTopics by viewModel.weakTopics.collectAsState()
 
+    val checklist = remember {
+        listOf(
+            "Preposition 'à + ville': J'habite à Genève, Vous allez à Montréal (Never 'en/au' for cities)",
+            "False Friend: 'la bibliothèque' (library) vs 'la librairie' (bookstore)",
+            "Nationality feminine agreement & pronunciation: américain -> américaine, français -> française",
+            "Verb Être conjugations & silent 's' in 'Nous sommes'",
+            "Campus abbreviations: le resto-U, la cité-U, l'amphi"
+        )
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -435,52 +445,11 @@ fun ExamPrepTabContent(viewModel: FrenchCompanionViewModel) {
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)),
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Text(
-                        text = "Upcoming Exam 1 Readiness Estimate",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Target Date: November 14 • Chapters: Leçon 1, 2, 3",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    LinearProgressIndicator(
-                        progress = { 0.82f },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Estimated Readiness: 82% (Based on active quiz practice)",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                }
-            }
-        }
-
-        item {
             Text(
                 text = "Professor's Exam 1 High-Priority Checklist",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
             )
         }
-
-        val checklist = listOf(
-            "Preposition 'à + ville': J'habite à Genève, Vous allez à Montréal (Never 'en/au' for cities)",
-            "False Friend: 'la bibliothèque' (library) vs 'la librairie' (bookstore)",
-            "Nationality feminine agreement & pronunciation: américain -> américaine, français -> française",
-            "Verb Être conjugations & silent 's' in 'Nous sommes'",
-            "Campus abbreviations: le resto-U, la cité-U, l'amphi"
-        )
 
         items(checklist) { item ->
             Row(

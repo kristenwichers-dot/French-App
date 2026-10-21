@@ -348,5 +348,38 @@ class FrenchStudyCompanionTest {
         assertEquals(1, sportsResults.size)
         assertEquals("ch3", sportsResults[0].chapterId)
     }
+
+    @Test
+    fun testManualSpeechSessionStartFinishAndCancel() {
+        val speechEngine = com.example.audio.FrenchSpeechEngine(context)
+        assertFalse(speechEngine.isRecordingSession.value)
+
+        speechEngine.startManualSession("en-US")
+        assertTrue(speechEngine.isRecordingSession.value)
+
+        val result = speechEngine.finishManualSession()
+        assertFalse(speechEngine.isRecordingSession.value)
+        assertEquals("", result)
+
+        speechEngine.startManualSession("fr-FR")
+        assertTrue(speechEngine.isRecordingSession.value)
+        speechEngine.cancelManualSession()
+        assertFalse(speechEngine.isRecordingSession.value)
+    }
+
+    @Test
+    fun testFrenchInstantDictionaryHighCoverage() {
+        val helloResult = com.example.repository.FrenchInstantDictionary.findInstantTranslation("Hello", "English")
+        org.junit.Assert.assertNotNull(helloResult)
+        org.junit.Assert.assertTrue(helloResult!!.frenchText.contains("Bonjour", ignoreCase = true))
+
+        val coffeeResult = com.example.repository.FrenchInstantDictionary.findInstantTranslation("Je voudrais un café", "French")
+        org.junit.Assert.assertNotNull(coffeeResult)
+        org.junit.Assert.assertTrue(coffeeResult!!.englishText.contains("coffee", ignoreCase = true))
+
+        val libraryResult = com.example.repository.FrenchInstantDictionary.findInstantTranslation("Where is the library?", "English")
+        org.junit.Assert.assertNotNull(libraryResult)
+        org.junit.Assert.assertTrue(libraryResult!!.frenchText.contains("bibliothèque", ignoreCase = true))
+    }
 }
 

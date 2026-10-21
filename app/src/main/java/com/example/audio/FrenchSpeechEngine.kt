@@ -169,8 +169,112 @@ class FrenchSpeechEngine(private val context: Context) : RecognitionListener {
         }
     }
 
+    private val _isRecordingSession = MutableStateFlow(false)
+    val isRecordingSession: StateFlow<Boolean> = _isRecordingSession.asStateFlow()
+
+    private val _audioRms = MutableStateFlow(0f)
+    val audioRms: StateFlow<Float> = _audioRms.asStateFlow()
+
+    private val accumulatedSessionTranscript = StringBuilder()
+    private var pendingSessionCallback: ((String) -> Unit)? = null
+
     fun stopSpeaking() {
         tts?.stop()
+    }
+
+    /**
+     * Start a manual recording session.
+     * The engine keeps listening and accumulating spoken text until finishManualSessionAsync() or cancelManualSession() is called.
+     */
+    fun startManualSession(language: String = "auto") {
+        stopSpeaking()
+        currentLanguage = language
+        _isContinuousMode.value = false
+        _isRecordingSession.value = true
+        _isListening.value = true
+        accumulatedSessionTranscript.clear()
+        _liveTranscript.value = ""
+        _audioRms.value = 0f
+        isPaused = false
+        onSpeechResultListener = null
+        pendingSessionCallback = null
+
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            Log.w("FrenchSpeechEngine", "Speech recognition not available on this device")
+            return
+        }
+
+        startRecognitionInternal()
+    }
+
+    /**
+     * Stop the manual recording session asynchronously.
+     * Tells SpeechRecognizer to stop listening and flushes the remaining audio to onResults,
+     * delivering the complete accumulated transcript without discarding the last spoken words.
+     */
+    fun finishManualSessionAsync(onComplete: (String) -> Unit) {
+        _isRecordingSession.value = false
+        _isListening.value = false
+        _audioRms.value = 0f
+        pendingSessionCallback = onComplete
+
+        try {
+            speechRecognizer?.stopListening()
+        } catch (e: Exception) {
+            Log.e("FrenchSpeechEngine", "Error stopping listening on finish", e)
+        }
+
+        // Safety fallback: if onResults doesn't fire within 650ms, deliver what was captured
+        mainHandler.postDelayed({
+            pendingSessionCallback?.let { callback ->
+                pendingSessionCallback = null
+                val finalResult = _liveTranscript.value.trim()
+                cleanupRecognizer()
+                callback(finalResult)
+            }
+        }, 650)
+    }
+
+    /**
+     * Synchronous finish for testing and immediate extraction.
+     */
+    fun finishManualSession(): String {
+        _isRecordingSession.value = false
+        _isListening.value = false
+        _audioRms.value = 0f
+        mainHandler.removeCallbacksAndMessages(null)
+        pendingSessionCallback = null
+        try {
+            speechRecognizer?.stopListening()
+        } catch (e: Exception) {
+            Log.e("FrenchSpeechEngine", "Error finishing manual session", e)
+        }
+        val result = _liveTranscript.value.trim()
+        cleanupRecognizer()
+        return result
+    }
+
+    private fun cleanupRecognizer() {
+        try {
+            speechRecognizer?.destroy()
+            speechRecognizer = null
+        } catch (e: Exception) {
+            Log.e("FrenchSpeechEngine", "Error destroying speech recognizer", e)
+        }
+    }
+
+    /**
+     * Cancel the manual recording session without keeping the speech.
+     */
+    fun cancelManualSession() {
+        _isRecordingSession.value = false
+        _isListening.value = false
+        _audioRms.value = 0f
+        accumulatedSessionTranscript.clear()
+        _liveTranscript.value = ""
+        pendingSessionCallback = null
+        mainHandler.removeCallbacksAndMessages(null)
+        cleanupRecognizer()
     }
 
     fun startListening(
@@ -201,10 +305,10 @@ class FrenchSpeechEngine(private val context: Context) : RecognitionListener {
             }
 
             val resolvedPrimary = when {
-                currentLanguage.startsWith("en", ignoreCase = true) -> "en-US"
                 currentLanguage.startsWith("fr", ignoreCase = true) -> "fr-FR"
+                currentLanguage.startsWith("en", ignoreCase = true) -> "en-US"
                 else -> {
-                    // For auto, prefer French if device is set to fr, or en-US with fr support
+                    // For auto, default to English with French fallback
                     if (Locale.getDefault().language == "fr") "fr-FR" else "en-US"
                 }
             }
@@ -213,10 +317,10 @@ class FrenchSpeechEngine(private val context: Context) : RecognitionListener {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, resolvedPrimary)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, resolvedPrimary)
-                putExtra("android.speech.extra.ADDITIONAL_LANGUAGES", arrayOf("fr-FR", "en-US"))
-                putExtra("android.speech.extra.LANGUAGE_DETECTION_ALLOWED_LANGUAGES", arrayOf("fr-FR", "en-US"))
+                putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("fr-FR", "en-US"))
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
             }
 
@@ -224,7 +328,9 @@ class FrenchSpeechEngine(private val context: Context) : RecognitionListener {
             _isListening.value = true
         } catch (e: Exception) {
             Log.e("FrenchSpeechEngine", "Error starting listening", e)
-            _isListening.value = false
+            if (!_isRecordingSession.value) {
+                _isListening.value = false
+            }
         }
     }
 
@@ -242,18 +348,13 @@ class FrenchSpeechEngine(private val context: Context) : RecognitionListener {
     }
 
     fun stopListening() {
+        _isRecordingSession.value = false
         _isContinuousMode.value = false
         isPaused = false
         mainHandler.removeCallbacksAndMessages(null)
-        try {
-            speechRecognizer?.stopListening()
-            speechRecognizer?.destroy()
-            speechRecognizer = null
-        } catch (e: Exception) {
-            Log.e("FrenchSpeechEngine", "Error stopping listening", e)
-        } finally {
-            _isListening.value = false
-        }
+        pendingSessionCallback = null
+        cleanupRecognizer()
+        _isListening.value = false
     }
 
     // Speech recognition callbacks
@@ -261,17 +362,50 @@ class FrenchSpeechEngine(private val context: Context) : RecognitionListener {
         _isListening.value = true
     }
 
-    override fun onBeginningOfSpeech() {}
-    override fun onRmsChanged(rmsdB: Float) {}
+    override fun onBeginningOfSpeech() {
+        _isListening.value = true
+    }
+
+    override fun onRmsChanged(rmsdB: Float) {
+        if (_isListening.value || _isRecordingSession.value) {
+            _audioRms.value = rmsdB
+        }
+    }
+
     override fun onBufferReceived(buffer: ByteArray?) {}
 
     override fun onEndOfSpeech() {
-        _isListening.value = false
+        // Only set listening to false if NOT in a manual recording session!
+        if (!_isRecordingSession.value && pendingSessionCallback == null) {
+            _isListening.value = false
+        }
     }
 
     override fun onError(error: Int) {
-        _isListening.value = false
         Log.d("FrenchSpeechEngine", "SpeechRecognizer error code: $error")
+
+        // If a finish callback is pending, deliver whatever was captured so far
+        val pending = pendingSessionCallback
+        if (pending != null) {
+            pendingSessionCallback = null
+            mainHandler.removeCallbacksAndMessages(null)
+            val current = _liveTranscript.value.trim()
+            cleanupRecognizer()
+            pending(current)
+            return
+        }
+
+        if (_isRecordingSession.value) {
+            // In manual recording session, seamlessly keep listening across pauses/timeouts
+            mainHandler.postDelayed({
+                if (_isRecordingSession.value) {
+                    startRecognitionInternal()
+                }
+            }, 200)
+            return
+        }
+
+        _isListening.value = false
 
         // If continuous mode is active and not manually stopped/paused, auto-recover
         if (_isContinuousMode.value && !isPaused) {
@@ -284,12 +418,45 @@ class FrenchSpeechEngine(private val context: Context) : RecognitionListener {
     }
 
     override fun onResults(results: Bundle?) {
-        _isListening.value = false
         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: arrayListOf()
         val bestResult = if (matches.isNotEmpty()) {
-            AmericanFrenchPhoneticAdapter.resolveBestFrenchMatch(matches)
+            if (currentLanguage.startsWith("fr", ignoreCase = true)) {
+                AmericanFrenchPhoneticAdapter.resolveBestFrenchMatch(matches)
+            } else {
+                matches.first()
+            }
         } else ""
 
+        if (bestResult.isNotBlank()) {
+            if (accumulatedSessionTranscript.isNotEmpty()) {
+                accumulatedSessionTranscript.append(" ")
+            }
+            accumulatedSessionTranscript.append(bestResult)
+            _liveTranscript.value = accumulatedSessionTranscript.toString().trim()
+        }
+
+        // Check if user tapped finish and is waiting for the flushed results
+        val pending = pendingSessionCallback
+        if (pending != null) {
+            pendingSessionCallback = null
+            mainHandler.removeCallbacksAndMessages(null)
+            val fullResult = _liveTranscript.value.trim()
+            cleanupRecognizer()
+            pending(fullResult)
+            return
+        }
+
+        if (_isRecordingSession.value) {
+            // Seamlessly keep listening until the user touches the mic to finish
+            mainHandler.postDelayed({
+                if (_isRecordingSession.value) {
+                    startRecognitionInternal()
+                }
+            }, 150)
+            return
+        }
+
+        _isListening.value = false
         if (bestResult.isNotBlank()) {
             _liveTranscript.value = bestResult
             onSpeechResultListener?.invoke(bestResult)
@@ -307,10 +474,18 @@ class FrenchSpeechEngine(private val context: Context) : RecognitionListener {
 
     override fun onPartialResults(partialResults: Bundle?) {
         val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-        matches?.firstOrNull()?.let {
-            if (it.isNotBlank()) {
-                val adapted = AmericanFrenchPhoneticAdapter.normalizeAmericanFrench(it)
-                _liveTranscript.value = adapted
+        matches?.firstOrNull()?.let { match ->
+            if (match.isNotBlank()) {
+                val adapted = if (currentLanguage.startsWith("fr", ignoreCase = true)) {
+                    AmericanFrenchPhoneticAdapter.normalizeAmericanFrench(match)
+                } else match
+
+                if (_isRecordingSession.value) {
+                    val prefix = accumulatedSessionTranscript.toString().trim()
+                    _liveTranscript.value = if (prefix.isNotEmpty()) "$prefix $adapted" else adapted
+                } else {
+                    _liveTranscript.value = adapted
+                }
             }
         }
     }

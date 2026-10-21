@@ -39,15 +39,15 @@ fun TranslateScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val isListening by viewModel.speechEngine.isListening.collectAsState()
-    val isContinuousMode by viewModel.speechEngine.isContinuousMode.collectAsState()
-    val liveTranscript by viewModel.speechEngine.liveTranscript.collectAsState()
+    val isRecording by viewModel.isRecordingSpeech.collectAsState()
+    val liveTranscript by viewModel.liveSpokenTranscript.collectAsState()
     val livePhrases by viewModel.liveTranscripts.collectAsState()
+    val audioRms by viewModel.speechAudioRms.collectAsState()
 
     // Type to translate state
     var inputText by remember { mutableStateOf("") }
     var addExplanation by remember { mutableStateOf(false) }
-    var selectedDirection by remember { mutableStateOf("Auto-Detect (English ⇄ French)") }
+    var selectedDirection by remember { mutableStateOf("English ➔ French") }
     var directionMenuExpanded by remember { mutableStateOf(false) }
 
     // Displayed Translation & Language Detection State (Starts clean, NO fake examples!)
@@ -60,15 +60,7 @@ fun TranslateScreen(
     var currentAlternatives by remember { mutableStateOf<List<String>>(emptyList()) }
     var currentErrorMessage by remember { mutableStateOf<String?>(null) }
     var isTranslatingText by remember { mutableStateOf(false) }
-
-    // Sync live transcript changes into display
-    LaunchedEffect(liveTranscript) {
-        if (liveTranscript.isNotBlank()) {
-            currentSpoken = liveTranscript
-            currentErrorMessage = null
-            viewModel.handleLiveSpeech(liveTranscript)
-        }
-    }
+    var isTranslatingSpoken by remember { mutableStateOf(false) }
 
     LaunchedEffect(livePhrases) {
         val latest = livePhrases.firstOrNull()
@@ -81,6 +73,31 @@ fun TranslateScreen(
             currentAlternatives = latest.alternatives
             currentExplanation = latest.explanation
             currentErrorMessage = latest.errorMessage
+            isTranslatingSpoken = false
+        }
+    }
+
+    val executeSpeechFinish = {
+        isTranslatingSpoken = true
+        viewModel.finishManualSpeechSession { transcript ->
+            if (transcript.isNotBlank()) {
+                currentSpoken = transcript
+                currentErrorMessage = null
+                viewModel.translateText(transcript, addExplanation = false) { result ->
+                    isTranslatingSpoken = false
+                    detectedLanguage = result.detectedLanguage
+                    targetLanguage = result.targetLanguage
+                    currentSpoken = if (result.detectedLanguage == "English") result.englishText else result.frenchText
+                    currentTranslated = if (result.detectedLanguage == "English") result.frenchText else result.englishText
+                    currentPhonetics = result.phoneticText
+                    currentAlternatives = result.alternatives
+                    currentExplanation = result.explanation
+                    currentErrorMessage = result.errorMessage
+                }
+            } else {
+                isTranslatingSpoken = false
+                currentErrorMessage = "No speech detected. Please touch the mic and speak clearly."
+            }
         }
     }
 
@@ -166,7 +183,7 @@ fun TranslateScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "LIVE LISTENING",
+                        text = "TOUCH-TO-SPEAK TRANSLATOR",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp
@@ -174,15 +191,48 @@ fun TranslateScreen(
                         color = MaterialTheme.colorScheme.outline
                     )
                     Text(
-                        text = if (isListening) "Listening continuous..." else if (isContinuousMode) "Paused" else "Microphone off",
+                        text = if (isRecording) "Listening • Tap to finish" else if (isTranslatingSpoken) "Translating..." else "Ready",
                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = if (isListening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        color = if (isRecording) MaterialTheme.colorScheme.error else if (isTranslatingSpoken) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Prominent 1-Tap Language Direction Selection
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedDirection == "English ➔ French",
+                        onClick = {
+                            if (!isRecording) selectedDirection = "English ➔ French"
+                        },
+                        label = { Text("🇺🇸 Speak English", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = selectedDirection == "French ➔ English",
+                        onClick = {
+                            if (!isRecording) selectedDirection = "French ➔ English"
+                        },
+                        label = { Text("🇫🇷 Speak French", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = selectedDirection == "Auto-Detect",
+                        onClick = {
+                            if (!isRecording) selectedDirection = "Auto-Detect"
+                        },
+                        label = { Text("🌐 Auto", fontSize = 12.sp) },
+                        modifier = Modifier.weight(0.8f)
                     )
                 }
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Big Purple Microphone Button with pulse
+                // Microphone Touch-to-speak / Touch-to-finish Button
                 Box(
                     modifier = Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.Center
@@ -190,9 +240,9 @@ fun TranslateScreen(
                     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
                     val pulseScale by infiniteTransition.animateFloat(
                         initialValue = 1f,
-                        targetValue = if (isListening) 1.12f else 1f,
+                        targetValue = if (isRecording) 1.15f else 1f,
                         animationSpec = infiniteRepeatable(
-                            animation = tween(800, easing = FastOutSlowInEasing),
+                            animation = tween(650, easing = FastOutSlowInEasing),
                             repeatMode = RepeatMode.Reverse
                         ),
                         label = "pulseScale"
@@ -200,166 +250,207 @@ fun TranslateScreen(
 
                     IconButton(
                         onClick = {
-                            if (isListening) {
-                                viewModel.stopLiveListening()
+                            if (isRecording) {
+                                executeSpeechFinish()
                             } else {
                                 val dirMode = when (selectedDirection) {
                                     "English ➔ French" -> "ENGLISH_TO_FRENCH"
                                     "French ➔ English" -> "FRENCH_TO_ENGLISH"
                                     else -> "AUTO"
                                 }
-                                viewModel.startLiveListening(dirMode)
+                                currentErrorMessage = null
+                                viewModel.startManualSpeechSession(dirMode)
                             }
                         },
                         modifier = Modifier
-                            .size(76.dp)
+                            .size(80.dp)
                             .scale(pulseScale)
                             .clip(CircleShape)
-                            .background(if (isListening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.9f))
+                            .background(
+                                if (isRecording) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.primary
+                            )
                             .testTag("tap_to_listen_btn")
                     ) {
                         Icon(
-                            imageVector = if (isListening) Icons.Default.GraphicEq else Icons.Default.Mic,
-                            contentDescription = "Tap to listen",
+                            imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                            contentDescription = if (isRecording) "Touch when finished speaking" else "Touch mic to speak",
                             tint = Color.White,
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(38.dp)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = if (isListening) "LISTENING... SPEAK ENGLISH OR FRENCH" else "TAP TO LISTEN",
+                    text = if (isRecording) "RECORDING... TOUCH MIC WHEN FINISHED" else "TOUCH MIC TO SPEAK",
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
-                    text = "Speaks or hears both English and French with automatic language detection.",
+                    text = if (isRecording)
+                        "Speak freely in English or French. Touch the mic or 'Finish & Translate' below when you are done."
+                    else
+                        "Touch the mic, speak in English or French, then touch it again when finished.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                // Live Spoken Feedback when recording or translating
+                if (isRecording) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("live_hearing_bubble")
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.GraphicEq,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Listening to your voice...",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
 
-                // Direction Dropdown
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Mode:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 10.dp)
-                    )
-                    Box {
-                        OutlinedButton(
-                            onClick = { directionMenuExpanded = true },
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier.testTag("direction_dropdown_btn")
-                        ) {
-                            Text(selectedDirection, fontSize = 13.sp)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
+                                // 4 Dynamic audio level waveform bars
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                    verticalAlignment = Alignment.Bottom,
+                                    modifier = Modifier.height(18.dp)
+                                ) {
+                                    val rmsNorm = ((audioRms + 2f) / 10f).coerceIn(0.15f, 1f)
+                                    val barHeights = listOf(
+                                        (16f * rmsNorm).coerceAtLeast(4f).dp,
+                                        (18f * rmsNorm * 0.85f).coerceAtLeast(5f).dp,
+                                        (18f * rmsNorm * 1.15f).coerceAtLeast(6f).dp,
+                                        (14f * rmsNorm * 0.9f).coerceAtLeast(4f).dp
+                                    )
+                                    barHeights.forEach { h ->
+                                        Box(
+                                            modifier = Modifier
+                                                .width(4.dp)
+                                                .height(h)
+                                                .clip(RoundedCornerShape(2.dp))
+                                                .background(MaterialTheme.colorScheme.error)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = if (liveTranscript.isNotBlank()) "\"$liveTranscript\"" else "Speak now...",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
-                        DropdownMenu(
-                            expanded = directionMenuExpanded,
-                            onDismissRequest = { directionMenuExpanded = false }
+                    }
+                } else if (isTranslatingSpoken) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            DropdownMenuItem(
-                                text = { Text("Auto-Detect (English ⇄ French)") },
-                                onClick = {
-                                    selectedDirection = "Auto-Detect (English ⇄ French)"
-                                    directionMenuExpanded = false
-                                }
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
                             )
-                            DropdownMenuItem(
-                                text = { Text("English ➔ French") },
-                                onClick = {
-                                    selectedDirection = "English ➔ French"
-                                    directionMenuExpanded = false
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("French ➔ English") },
-                                onClick = {
-                                    selectedDirection = "French ➔ English"
-                                    directionMenuExpanded = false
-                                }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Translating speech...",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // Action Buttons: Pause, Resume, Stop, Clear
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (isListening) {
-                        OutlinedButton(
-                            onClick = { viewModel.pauseLiveListening() },
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("pause_listening_btn")
-                        ) {
-                            Text("Pause", fontSize = 13.sp)
-                        }
-                    } else if (isContinuousMode) {
+                // Action Buttons based on recording state
+                if (isRecording) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
                         Button(
-                            onClick = { viewModel.resumeLiveListening() },
-                            shape = RoundedCornerShape(8.dp),
+                            onClick = {
+                                executeSpeechFinish()
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(2f)
+                                .testTag("finish_listening_btn")
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Finish & Translate", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.cancelManualSpeechSession()
+                                isTranslatingSpoken = false
+                            },
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1f)
-                                .testTag("resume_listening_btn")
+                                .testTag("cancel_listening_btn")
                         ) {
-                            Text("Resume", fontSize = 13.sp)
+                            Text("Cancel")
                         }
                     }
-
-                    OutlinedButton(
-                        onClick = { viewModel.stopLiveListening() },
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("stop_listening_btn")
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
                     ) {
-                        Text("Stop", fontSize = 13.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.clearLiveTranscripts()
-                            currentSpoken = ""
-                            currentTranslated = ""
-                            currentPhonetics = ""
-                            currentAlternatives = emptyList()
-                            currentErrorMessage = null
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("clear_listening_btn")
-                    ) {
-                        Text("Clear", fontSize = 13.sp)
+                        if (currentSpoken.isNotBlank() || currentTranslated.isNotBlank()) {
+                            TextButton(
+                                onClick = {
+                                    currentSpoken = ""
+                                    currentTranslated = ""
+                                    currentPhonetics = ""
+                                    currentExplanation = ""
+                                    currentAlternatives = emptyList()
+                                    currentErrorMessage = null
+                                    viewModel.clearLiveTranscripts()
+                                }
+                            ) {
+                                Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Clear", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Phrases translate automatically. Auto-detect identifies English vs French and outputs the matching translation.",
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
-                    color = MaterialTheme.colorScheme.outline
-                )
             }
         }
 

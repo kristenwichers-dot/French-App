@@ -75,7 +75,8 @@ class FrenchCompanionRepository(
     suspend fun callGemini(
         prompt: String,
         systemPrompt: String? = null,
-        imagePart: Part? = null
+        imagePart: Part? = null,
+        maxTokens: Int = 4096
     ): String = withContext(Dispatchers.IO) {
         val parts = mutableListOf<Part>()
         imagePart?.let { parts.add(it) }
@@ -85,7 +86,7 @@ class FrenchCompanionRepository(
             contents = listOf(Content(parts = parts)),
             generationConfig = GenerationConfig(
                 temperature = 0.2f,
-                maxOutputTokens = 4096
+                maxOutputTokens = maxTokens
             ),
             systemInstruction = systemPrompt?.let { Content(parts = listOf(Part(text = it))) }
         )
@@ -565,13 +566,19 @@ class FrenchCompanionRepository(
         val detected = detectLanguage(trimmed)
         val target = if (detected == "English") "French" else "English"
 
+        // Check verified instant educational dictionary for immediate (<1ms) response
+        val instantMatch = FrenchInstantDictionary.findInstantTranslation(trimmed, detected, showPhonetics)
+        if (instantMatch != null && mode == "QUICK") {
+            return@withContext instantMatch
+        }
+
         // Check for explicit "French only" request
         val isFrenchOnly = trimmed.contains("french only", ignoreCase = true) ||
                 trimmed.contains("just the french", ignoreCase = true) ||
                 trimmed.contains("in french only", ignoreCase = true)
 
-        // Retrieve matching course material if requested
-        val matchingDocs = if (sourcePreference != "GENERAL") {
+        // Retrieve matching course material only if in TUTOR mode or COURSE_ONLY mode to keep QUICK mode fast
+        val matchingDocs = if (sourcePreference == "COURSE_ONLY" || (mode == "TUTOR" && sourcePreference != "GENERAL")) {
             appDao.searchDocuments(trimmed.take(30))
         } else emptyList()
 
@@ -588,8 +595,8 @@ class FrenchCompanionRepository(
         }
 
         val courseContext = if (matchingDocs.isNotEmpty()) {
-            "COURSE MATERIAL GROUNDING:\n" + matchingDocs.take(3).joinToString("\n") {
-                "[From ${it.originalFileName} (${it.pageOrTimestamp})]: ${it.contentText.take(500)}"
+            "COURSE MATERIAL GROUNDING:\n" + matchingDocs.take(2).joinToString("\n") {
+                "[From ${it.originalFileName} (${it.pageOrTimestamp})]: ${it.contentText.take(400)}"
             }
         } else ""
 
@@ -629,11 +636,18 @@ class FrenchCompanionRepository(
         """.trimIndent()
 
         try {
-            val raw = callGemini(userPrompt, systemPrompt)
+            val raw = callGemini(userPrompt, systemPrompt, maxTokens = if (mode == "QUICK") 600 else 1500)
             val result = parseTranslationJson(raw, isFrenchOnly, showPhonetics, detected, target, trimmed)
             result.copy(isCourseGrounded = matchingDocs.isNotEmpty())
         } catch (e: Exception) {
             Log.w("FrenchCompanionRepository", "Gemini translation failed: ${e.message}", e)
+            // Check verified instant educational dictionary first
+            val instant = instantMatch ?: FrenchInstantDictionary.findInstantTranslation(trimmed, detected, showPhonetics)
+            if (instant != null) {
+                return@withContext instant.copy(
+                    isCourseGrounded = matchingDocs.isNotEmpty()
+                )
+            }
             // Check verified offline dictionary
             val offline = getOfflineDictionaryTranslation(trimmed, detected)
             if (offline != null) {
@@ -642,7 +656,7 @@ class FrenchCompanionRepository(
                     phoneticText = if (showPhonetics) offline.phoneticText else ""
                 )
             }
-            // Propagate error message with no fabricated hallucination
+            // Propagate clean error message with advice on API key configuration
             TranslationResult(
                 frenchText = if (detected == "French") trimmed else "",
                 englishText = if (detected == "English") trimmed else "",

@@ -378,6 +378,33 @@ class FrenchCompanionViewModel(application: Application) : AndroidViewModel(appl
         _liveMode.value = mode
     }
 
+    // Manual Speech Recording State & Controls (Touch to speak, touch when finished)
+    val isRecordingSpeech = speechEngine.isRecordingSession
+    val liveSpokenTranscript = speechEngine.liveTranscript
+    val speechAudioRms = speechEngine.audioRms
+
+    fun startManualSpeechSession(languageDirection: String = "AUTO") {
+        val speechLang = when (languageDirection) {
+            "ENGLISH_TO_FRENCH" -> "en-US"
+            "FRENCH_TO_ENGLISH" -> "fr-FR"
+            else -> "auto"
+        }
+        speechEngine.startManualSession(language = speechLang)
+    }
+
+    fun finishManualSpeechSession(onComplete: (String) -> Unit) {
+        speechEngine.finishManualSessionAsync { transcript ->
+            if (transcript.isNotBlank()) {
+                handleLiveSpeech(transcript)
+            }
+            onComplete(transcript)
+        }
+    }
+
+    fun cancelManualSpeechSession() {
+        speechEngine.cancelManualSession()
+    }
+
     fun startLiveListening(languageDirection: String = "AUTO") {
         val speechLang = when (languageDirection) {
             "ENGLISH_TO_FRENCH" -> "en-US"
