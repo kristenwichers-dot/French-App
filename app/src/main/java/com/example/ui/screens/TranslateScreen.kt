@@ -7,6 +7,7 @@ import android.widget.Toast
 import java.util.Locale
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -62,6 +63,8 @@ fun TranslateScreen(
     var isTranslatingText by remember { mutableStateOf(false) }
     var isTranslatingSpoken by remember { mutableStateOf(false) }
 
+    val isStreamingTranslation by viewModel.isStreamingTranslation.collectAsState()
+
     LaunchedEffect(livePhrases) {
         val latest = livePhrases.firstOrNull()
         if (latest != null) {
@@ -83,17 +86,26 @@ fun TranslateScreen(
             if (transcript.isNotBlank()) {
                 currentSpoken = transcript
                 currentErrorMessage = null
-                viewModel.translateText(transcript, addExplanation = false) { result ->
-                    isTranslatingSpoken = false
-                    detectedLanguage = result.detectedLanguage
-                    targetLanguage = result.targetLanguage
-                    currentSpoken = if (result.detectedLanguage == "English") result.englishText else result.frenchText
-                    currentTranslated = if (result.detectedLanguage == "English") result.frenchText else result.englishText
-                    currentPhonetics = result.phoneticText
-                    currentAlternatives = result.alternatives
-                    currentExplanation = result.explanation
-                    currentErrorMessage = result.errorMessage
-                }
+                currentTranslated = ""
+                val detected = viewModel.detectLanguage(transcript)
+                detectedLanguage = detected
+                targetLanguage = if (detected == "English") "French" else "English"
+                viewModel.startStreamingTranslation(
+                    text = transcript,
+                    addExplanation = false,
+                    onChunk = { accumulated ->
+                        isTranslatingSpoken = false
+                        currentTranslated = accumulated
+                    },
+                    onComplete = { finalText ->
+                        isTranslatingSpoken = false
+                        currentTranslated = finalText
+                    },
+                    onError = { error ->
+                        isTranslatingSpoken = false
+                        currentErrorMessage = error
+                    }
+                )
             } else {
                 isTranslatingSpoken = false
                 currentErrorMessage = "No speech detected. Please touch the mic and speak clearly."
@@ -232,75 +244,138 @@ fun TranslateScreen(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Microphone Touch-to-speak / Touch-to-finish Button
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-                    val pulseScale by infiniteTransition.animateFloat(
-                        initialValue = 1f,
-                        targetValue = if (isRecording) 1.15f else 1f,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(650, easing = FastOutSlowInEasing),
-                            repeatMode = RepeatMode.Reverse
-                        ),
-                        label = "pulseScale"
-                    )
+                val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                val pulseScale by infiniteTransition.animateFloat(
+                    initialValue = 1f,
+                    targetValue = if (isRecording) 1.08f else 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(650, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "pulseScale"
+                )
 
-                    IconButton(
-                        onClick = {
-                            if (isRecording) {
-                                executeSpeechFinish()
-                            } else {
-                                val dirMode = when (selectedDirection) {
-                                    "English ➔ French" -> "ENGLISH_TO_FRENCH"
-                                    "French ➔ English" -> "FRENCH_TO_ENGLISH"
-                                    else -> "AUTO"
-                                }
-                                currentErrorMessage = null
-                                viewModel.startManualSpeechSession(dirMode)
+                // Large Rectangular Touch-to-Speak / Touch-to-Finish Button
+                Surface(
+                    onClick = {
+                        if (isRecording) {
+                            executeSpeechFinish()
+                        } else {
+                            val dirMode = when (selectedDirection) {
+                                "English ➔ French" -> "ENGLISH_TO_FRENCH"
+                                "French ➔ English" -> "FRENCH_TO_ENGLISH"
+                                else -> "AUTO"
                             }
-                        },
+                            currentErrorMessage = null
+                            viewModel.startManualSpeechSession(dirMode)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(96.dp)
+                        .testTag("tap_to_listen_btn"),
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primaryContainer,
+                    shadowElevation = if (isRecording) 6.dp else 2.dp,
+                    border = if (!isRecording) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)) else null
+                ) {
+                    Row(
                         modifier = Modifier
-                            .size(80.dp)
-                            .scale(pulseScale)
-                            .clip(CircleShape)
-                            .background(
-                                if (isRecording) MaterialTheme.colorScheme.error
-                                else MaterialTheme.colorScheme.primary
-                            )
-                            .testTag("tap_to_listen_btn")
+                            .fillMaxSize()
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                            contentDescription = if (isRecording) "Touch when finished speaking" else "Touch mic to speak",
-                            tint = Color.White,
-                            modifier = Modifier.size(38.dp)
-                        )
+                        // Large Icon Badge
+                        Box(
+                            modifier = Modifier
+                                .size(60.dp)
+                                .scale(if (isRecording) pulseScale else 1f)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isRecording) Color.White.copy(alpha = 0.25f)
+                                    else MaterialTheme.colorScheme.primary
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                                contentDescription = if (isRecording) "Touch when finished speaking" else "Touch mic to speak",
+                                tint = Color.White,
+                                modifier = Modifier.size(34.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(16.dp))
+
+                        // Large Action Labels
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = if (isRecording) "RECORDING • TAP TO FINISH" else "TAP TO SPEAK",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 17.sp,
+                                    letterSpacing = 0.5.sp
+                                ),
+                                color = if (isRecording) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (isRecording)
+                                    "Tap to stop recording & translate live"
+                                else
+                                    "Tap anywhere to speak English or French",
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                                color = if (isRecording) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Audio Wave Indicator when recording, or audio graphic icon when ready
+                        if (isRecording) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.height(24.dp)
+                            ) {
+                                val rmsNorm = ((audioRms + 2f) / 10f).coerceIn(0.15f, 1f)
+                                val barHeights = listOf(
+                                    (20f * rmsNorm).coerceAtLeast(6f).dp,
+                                    (24f * rmsNorm * 0.85f).coerceAtLeast(8f).dp,
+                                    (24f * rmsNorm * 1.15f).coerceAtLeast(10f).dp,
+                                    (18f * rmsNorm * 0.9f).coerceAtLeast(6f).dp
+                                )
+                                barHeights.forEach { h ->
+                                    Box(
+                                        modifier = Modifier
+                                            .width(4.dp)
+                                            .height(h)
+                                            .clip(RoundedCornerShape(2.dp))
+                                            .background(Color.White)
+                                    )
+                                }
+                            }
+                        } else {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.GraphicEq,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Text(
-                    text = if (isRecording) "RECORDING... TOUCH MIC WHEN FINISHED" else "TOUCH MIC TO SPEAK",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(3.dp))
-                Text(
-                    text = if (isRecording)
-                        "Speak freely in English or French. Touch the mic or 'Finish & Translate' below when you are done."
-                    else
-                        "Touch the mic, speak in English or French, then touch it again when finished.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
 
                 // Live Spoken Feedback when recording or translating
                 if (isRecording) {
@@ -625,14 +700,30 @@ fun TranslateScreen(
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = currentTranslated.ifEmpty { "Translation will appear here..." },
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = currentTranslated.ifEmpty {
+                                if (isStreamingTranslation) "Streaming live translation..." else "Translation will appear here..."
+                            },
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (isStreamingTranslation) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 8.dp, height = 18.dp)
+                                    .background(MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(2.dp))
+                            )
+                        }
+                    }
 
                     if (currentErrorMessage != null) {
                         Spacer(modifier = Modifier.height(8.dp))
@@ -885,26 +976,37 @@ fun TranslateScreen(
 
                     Button(
                         onClick = {
-                            if (inputText.isNotBlank() && !isTranslatingText) {
+                            if (inputText.isNotBlank() && !isTranslatingText && !isStreamingTranslation) {
                                 isTranslatingText = true
-                                viewModel.translateText(inputText, addExplanation) { result ->
-                                    isTranslatingText = false
-                                    detectedLanguage = result.detectedLanguage
-                                    targetLanguage = result.targetLanguage
-                                    currentSpoken = if (result.detectedLanguage == "English") result.englishText else result.frenchText
-                                    currentTranslated = if (result.detectedLanguage == "English") result.frenchText else result.englishText
-                                    currentPhonetics = result.phoneticText
-                                    currentAlternatives = result.alternatives
-                                    currentExplanation = result.explanation
-                                    currentErrorMessage = result.errorMessage
-                                }
+                                currentSpoken = inputText
+                                currentTranslated = ""
+                                currentErrorMessage = null
+                                val detected = viewModel.detectLanguage(inputText)
+                                detectedLanguage = detected
+                                targetLanguage = if (detected == "English") "French" else "English"
+                                viewModel.startStreamingTranslation(
+                                    text = inputText,
+                                    addExplanation = addExplanation,
+                                    onChunk = { accumulated ->
+                                        isTranslatingText = false
+                                        currentTranslated = accumulated
+                                    },
+                                    onComplete = { finalText ->
+                                        isTranslatingText = false
+                                        currentTranslated = finalText
+                                    },
+                                    onError = { error ->
+                                        isTranslatingText = false
+                                        currentErrorMessage = error
+                                    }
+                                )
                             }
                         },
-                        enabled = inputText.isNotBlank() && !isTranslatingText,
+                        enabled = inputText.isNotBlank() && !isTranslatingText && !isStreamingTranslation,
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.testTag("translate_submit_btn")
                     ) {
-                        if (isTranslatingText) {
+                        if (isTranslatingText || isStreamingTranslation) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
                             Spacer(modifier = Modifier.width(6.dp))
                         }

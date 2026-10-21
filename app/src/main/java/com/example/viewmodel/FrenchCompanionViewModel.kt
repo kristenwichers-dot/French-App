@@ -341,6 +341,106 @@ class FrenchCompanionViewModel(application: Application) : AndroidViewModel(appl
         }
     }
 
+    // Streaming Translation State for Real-Time "Live" Feel
+    private val _streamingTranslation = MutableStateFlow("")
+    val streamingTranslation: StateFlow<String> = _streamingTranslation.asStateFlow()
+
+    private val _isStreamingTranslation = MutableStateFlow(false)
+    val isStreamingTranslation: StateFlow<Boolean> = _isStreamingTranslation.asStateFlow()
+
+    private val _streamingDetectedLang = MutableStateFlow("Auto")
+    val streamingDetectedLang: StateFlow<String> = _streamingDetectedLang.asStateFlow()
+
+    private val _streamingTargetLang = MutableStateFlow("French")
+    val streamingTargetLang: StateFlow<String> = _streamingTargetLang.asStateFlow()
+
+    private val _streamingError = MutableStateFlow<String?>(null)
+    val streamingError: StateFlow<String?> = _streamingError.asStateFlow()
+
+    fun detectLanguage(text: String): String = repository.detectLanguage(text)
+
+    fun streamTranslate(
+        text: String,
+        addExplanation: Boolean = false
+    ): Flow<String> {
+        return repository.streamTranslate(
+            userInput = text,
+            mode = if (addExplanation) "TUTOR" else "QUICK",
+            showPhonetics = _showPhonetics.value
+        )
+    }
+
+    fun startStreamingTranslation(
+        text: String,
+        addExplanation: Boolean = false,
+        onChunk: ((String) -> Unit)? = null,
+        onComplete: ((String) -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
+    ) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+
+        val detected = repository.detectLanguage(trimmed)
+        val target = if (detected == "English") "French" else "English"
+        _streamingDetectedLang.value = detected
+        _streamingTargetLang.value = target
+        _streamingTranslation.value = ""
+        _streamingError.value = null
+        _isStreamingTranslation.value = true
+
+        viewModelScope.launch {
+            val accumulated = StringBuilder()
+            try {
+                repository.streamTranslate(
+                    userInput = trimmed,
+                    mode = if (addExplanation) "TUTOR" else "QUICK",
+                    showPhonetics = _showPhonetics.value
+                ).collect { chunk ->
+                    accumulated.append(chunk)
+                    val currentText = accumulated.toString()
+                    _streamingTranslation.value = currentText
+                    onChunk?.invoke(currentText)
+                }
+                _isStreamingTranslation.value = false
+                val finalText = accumulated.toString().trim()
+                onComplete?.invoke(finalText)
+
+                // Background enrichment: get alternatives, phonetics, and grammar explanation
+                launch {
+                    try {
+                        val fullResult = repository.answerOrTranslate(
+                            userInput = trimmed,
+                            mode = if (addExplanation) "TUTOR" else "QUICK",
+                            sourcePreference = _sourcePreference.value,
+                            showPhonetics = _showPhonetics.value
+                        )
+                        val isInputEnglish = fullResult.detectedLanguage == "English"
+                        val newItem = LiveTranscriptItem(
+                            spokenText = trimmed,
+                            translatedText = finalText.ifEmpty { if (isInputEnglish) fullResult.frenchText else fullResult.englishText },
+                            spokenLang = fullResult.detectedLanguage,
+                            targetLang = fullResult.targetLanguage,
+                            french = if (isInputEnglish) (finalText.ifEmpty { fullResult.frenchText }) else trimmed,
+                            english = if (isInputEnglish) trimmed else (finalText.ifEmpty { fullResult.englishText }),
+                            phonetics = fullResult.phoneticText,
+                            alternatives = fullResult.alternatives,
+                            explanation = fullResult.explanation,
+                            errorMessage = null
+                        )
+                        _liveTranscripts.value = listOf(newItem) + _liveTranscripts.value
+                    } catch (_: Exception) {
+                        // Non-critical background metadata lookup
+                    }
+                }
+            } catch (e: Exception) {
+                _isStreamingTranslation.value = false
+                val errorMsg = e.localizedMessage ?: "Translation failed"
+                _streamingError.value = errorMsg
+                onError?.invoke(errorMsg)
+            }
+        }
+    }
+
     fun translateText(
         text: String,
         addExplanation: Boolean,

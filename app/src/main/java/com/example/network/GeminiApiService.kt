@@ -3,7 +3,12 @@ package com.example.network
 import com.example.BuildConfig
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import okhttp3.OkHttpClient
+import okhttp3.ResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.HttpException
 import retrofit2.Retrofit
@@ -12,6 +17,8 @@ import retrofit2.http.Body
 import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
+import retrofit2.http.Streaming
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -54,6 +61,15 @@ interface GeminiApiService {
         @Path("model") model: String = "gemini-3.5-flash",
         @Body request: GenerateContentRequest
     ): GenerateContentResponse
+
+    @Streaming
+    @POST("v1beta/models/{model}:streamGenerateContent")
+    suspend fun streamGenerateContent(
+        @Header("x-goog-api-key") apiKey: String,
+        @Path("model") model: String = "gemini-3.5-flash",
+        @Query("alt") alt: String = "sse",
+        @Body request: GenerateContentRequest
+    ): ResponseBody
 }
 
 object GeminiClient {
@@ -166,4 +182,71 @@ object GeminiClient {
             throw GeminiException.NetworkException("Unexpected error during Gemini call: ${e.localizedMessage}", e)
         }
     }
+
+    fun streamGenerateContent(
+        request: GenerateContentRequest,
+        model: String = DEFAULT_MODEL
+    ): Flow<String> = flow {
+        val key = getApiKey()
+        if (key.isBlank() || key == "MY_GEMINI_API_KEY") {
+            throw GeminiException.MissingApiKeyException()
+        }
+
+        val responseBody: ResponseBody = try {
+            service.streamGenerateContent(
+                apiKey = key,
+                model = model,
+                alt = "sse",
+                request = request
+            )
+        } catch (e: HttpException) {
+            when (e.code()) {
+                400 -> throw GeminiException.ServerException(400, "Bad request to Gemini model $model. Check parameters.")
+                401, 403 -> throw GeminiException.AuthenticationException()
+                429 -> throw GeminiException.RateLimitException()
+                in 500..599 -> throw GeminiException.ServerException(e.code())
+                else -> throw GeminiException.ServerException(e.code(), e.message())
+            }
+        } catch (e: IOException) {
+            throw GeminiException.NetworkException("Network error connecting to Gemini: ${e.localizedMessage}", e)
+        } catch (e: GeminiException) {
+            throw e
+        } catch (e: Exception) {
+            throw GeminiException.NetworkException("Unexpected error during Gemini stream call: ${e.localizedMessage}", e)
+        }
+
+        val candidateAdapter = moshi.adapter(GenerateContentResponse::class.java)
+
+        responseBody.use { body ->
+            val reader = body.byteStream().bufferedReader()
+            var line = reader.readLine()
+            while (line != null) {
+                val trimmed = line.trim()
+                if (trimmed.startsWith("data: ")) {
+                    val jsonStr = trimmed.removePrefix("data: ").trim()
+                    if (jsonStr.isNotBlank() && jsonStr != "[DONE]") {
+                        try {
+                            val parsedChunk = candidateAdapter.fromJson(jsonStr)
+                            val candidate = parsedChunk?.candidates?.firstOrNull()
+                            if (candidate?.finishReason == "SAFETY") {
+                                throw GeminiException.ContentBlockedException()
+                            }
+                            val textPart = candidate?.content?.parts
+                                ?.mapNotNull { it.text }
+                                ?.filter { it.isNotEmpty() }
+                                ?.joinToString("")
+                            if (!textPart.isNullOrEmpty()) {
+                                emit(textPart)
+                            }
+                        } catch (e: GeminiException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // Non-fatal parse exception for intermediate line
+                        }
+                    }
+                }
+                line = reader.readLine()
+            }
+        }
+    }.flowOn(Dispatchers.IO)
 }

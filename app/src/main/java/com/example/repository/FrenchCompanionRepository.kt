@@ -7,6 +7,9 @@ import com.example.data.*
 import com.example.network.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -545,6 +548,80 @@ class FrenchCompanionRepository(
 
         parsedNote
     }
+
+    // 4a. Real-time Streaming Translation with Instant Educational Dictionary Pre-Check
+    fun streamTranslate(
+        userInput: String,
+        mode: String = "QUICK",
+        showPhonetics: Boolean = true
+    ): Flow<String> = flow {
+        val trimmed = userInput.trim()
+        if (trimmed.isEmpty()) return@flow
+
+        val detected = detectLanguage(trimmed)
+        val target = if (detected == "English") "French" else "English"
+
+        // Check verified instant educational dictionary first for immediate (<1ms) response
+        val instantMatch = FrenchInstantDictionary.findInstantTranslation(trimmed, detected, showPhonetics)
+        if (instantMatch != null && mode == "QUICK") {
+            val instantText = if (detected == "English") instantMatch.frenchText else instantMatch.englishText
+            emit(instantText)
+            return@flow
+        }
+
+        val systemPrompt = """
+            You are a lightning-fast, native French-English translator for a Beginning French I college student.
+            Rules:
+            - If student inputs English: Translate directly to natural, conversational French.
+            - If student inputs French: Translate directly to natural, clear English.
+            - Output ONLY the direct translated words.
+            - Do NOT include any explanations, markdown, quotes, notes, or introductions.
+            - Stream the words immediately as they are translated.
+        """.trimIndent()
+
+        val userPrompt = """
+            Input language: $detected
+            Target language: $target
+            Translate: "$trimmed"
+        """.trimIndent()
+
+        val request = GenerateContentRequest(
+            contents = listOf(
+                Content(
+                    parts = listOf(Part(text = userPrompt)),
+                    role = "user"
+                )
+            ),
+            generationConfig = GenerationConfig(
+                temperature = 0.2f,
+                maxOutputTokens = if (mode == "QUICK") 400 else 800
+            ),
+            systemInstruction = Content(
+                parts = listOf(Part(text = systemPrompt))
+            )
+        )
+
+        GeminiClient.streamGenerateContent(request).collect { chunk ->
+            emit(chunk)
+        }
+    }.catch { e ->
+        Log.w("FrenchCompanionRepository", "Gemini stream translation failed: ${e.message}", e)
+        val trimmed = userInput.trim()
+        val detected = detectLanguage(trimmed)
+        val instant = FrenchInstantDictionary.findInstantTranslation(trimmed, detected, showPhonetics)
+        if (instant != null) {
+            val text = if (detected == "English") instant.frenchText else instant.englishText
+            emit(text)
+        } else {
+            val offline = getOfflineDictionaryTranslation(trimmed, detected)
+            if (offline != null) {
+                val text = if (detected == "English") offline.frenchText else offline.englishText
+                emit(text)
+            } else {
+                throw e
+            }
+        }
+    }.flowOn(Dispatchers.IO)
 
     // 4. Quick Translator & Q&A with Bidirectional Auto-Detection
     suspend fun answerOrTranslate(
